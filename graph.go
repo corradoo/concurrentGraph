@@ -36,6 +36,7 @@ func (g *Graph) AddNode() (id int) {
 	g.vertices = append(g.vertices, &Vertex{
 		index: id,
 		in:    make(chan Package),
+		wg:    sync.WaitGroup{},
 	})
 	return
 }
@@ -54,24 +55,14 @@ func (g *Graph) Nodes() []int {
 	return vertices
 }
 
-//func (g *Graph) Edges() [][2]int {
-//	edges := make([][2]int, 0, len(g.vertices))
-//	for i := 0; i < len(g.vertices); i++ {
-//		for k := range g.vertices[i].edges {
-//			edges = append(edges, [2]int{i, k})
-//		}
-//	}
-//	return edges
-//}
-
-func Producer(link chan<- Package, g *Graph) {
+func Producer(source chan<- Package, g *Graph) {
 
 	wg := &g.vertices[0].wg
-	wg.Add(1)
 	defer wg.Done()
 	vis := make([]int, 0)
 	m := Package{0, vis}
-	link <- m
+	fmt.Println("Puting package into source...")
+	source <- m
 }
 
 func Consumer(link <-chan Package, done chan<- bool) {
@@ -81,9 +72,9 @@ func Consumer(link <-chan Package, done chan<- bool) {
 
 func main() {
 	graph := New()
-	const n = 3
-	//d:=20
+	const n = 10
 	nodes := make([]int, n)
+
 	//Make nodes
 	for i := 0; i < n; i++ {
 		nodes[i] = graph.AddNode()
@@ -95,33 +86,27 @@ func main() {
 		graph.AddEdge(nodes[i], nodes[i+1])
 	}
 
-	//fmt.Println("Edges: ", graph.Edges())
-
-	//Put extra edges
-	//rand.Seed(time.Now().UnixNano())
-	//for i:=0; i<d; i++ {
-	//	v1:= rand.Intn(n-2)
-	//	v2:= rand.Intn(n-1-v1)+v1+1
-	//	graph.AddEdge(v1,v2)
-	//}
-
-	//fmt.Println("Extended edges: ", graph.Edges())
 	source := make(chan Package)
 	end := make(chan Package)
 	done := make(chan bool)
 
+	graph.vertices[0].in = source
 	//Exit from ending vertex
 	graph.vertices[len(graph.vertices)-1].outs = append(graph.vertices[len(graph.vertices)-1].outs, &end)
 
+	graph.vertices[0].wg.Add(1)
 	go Producer(source, graph)
-	go Consumer(end, done)
+
 	for i := 0; i < n; i++ {
-		graph.vertices[i].wg.Add(1)
 		fmt.Println("Starting vertex nr: ", i)
+		graph.vertices[i].wg.Add(1)
 		go Forwarder(graph.vertices[i])
 
 	}
-
+	go Consumer(end, done)
+	for i := 0; i < n; i++ {
+		graph.vertices[i].wg.Wait()
+	}
 	<-done
 }
 
@@ -130,16 +115,16 @@ func Forwarder(vertex *Vertex) {
 	in := vertex.in
 	//Recieve
 	p := <-in
-	fmt.Println("Package recieved: ", p.id)
+	fmt.Println("Vertex ", vertex.index, "\n\tPackage recieved: ", p.id)
 	p.visited = append(p.visited, vertex.index)
 	vertex.packages = append(vertex.packages, p.id)
 
 	//Choose
 	rand.Seed(time.Now().UnixNano())
-	//out := vertex.outs[rand.Intn(len(vertex.outs))]
-	out := *vertex.outs[0]
+	out := *vertex.outs[rand.Intn(len(vertex.outs))]
+	//out := *vertex.outs[0]
 	//Sleep
-	time.Sleep(time.Duration(rand.Intn(1000)))
+	time.Sleep(time.Duration(rand.Intn(10000)))
 
 	//Send
 	out <- p
