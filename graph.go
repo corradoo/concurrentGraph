@@ -55,24 +55,30 @@ func (g *Graph) Nodes() []int {
 	return vertices
 }
 
-func Producer(source chan<- Package, g *Graph) {
-
+func Producer(source chan<- Package, g *Graph, k int) {
+	g.vertices[0].wg.Add(1)
 	wg := &g.vertices[0].wg
 	defer wg.Done()
 	vis := make([]int, 0)
-	m := Package{0, vis}
-	fmt.Println("Puting package into source...")
-	source <- m
+	for i := 1; i < k; i++ {
+		m := Package{i, vis}
+		fmt.Println("Puting package ", i, " into source...")
+		source <- m
+		time.Sleep(time.Millisecond * 1500)
+	}
 }
 
 func Consumer(link <-chan Package, done chan<- bool) {
-	fmt.Println(<-link)
+	p := <-link
+	fmt.Println("Package nr ", p.id, " recieved: \n", p)
 	done <- true
 }
 
 func main() {
 	graph := New()
 	const n = 10
+	const d = 4
+	k := 5
 	nodes := make([]int, n)
 
 	//Make nodes
@@ -85,17 +91,25 @@ func main() {
 	for i := 0; i < n-1; i++ {
 		graph.AddEdge(nodes[i], nodes[i+1])
 	}
+	//Put extra edges
+	rand.Seed(time.Now().UnixNano())
+	for i := 0; i < d; i++ {
+		v1 := rand.Intn(n - 2)
+		v2 := rand.Intn(n-1-v1) + v1 + 1
+		graph.AddEdge(v1, v2)
+	}
 
 	source := make(chan Package)
 	end := make(chan Package)
+	endWG := sync.WaitGroup{}
 	done := make(chan bool)
 
 	graph.vertices[0].in = source
 	//Exit from ending vertex
 	graph.vertices[len(graph.vertices)-1].outs = append(graph.vertices[len(graph.vertices)-1].outs, &end)
+	graph.vertices[len(graph.vertices)-1].wgs = append(graph.vertices[len(graph.vertices)-1].wgs, &endWG)
 
-	graph.vertices[0].wg.Add(1)
-	go Producer(source, graph)
+	go Producer(source, graph, k)
 
 	for i := 0; i < n; i++ {
 		fmt.Println("Starting vertex nr: ", i)
@@ -104,28 +118,32 @@ func main() {
 
 	}
 	go Consumer(end, done)
-	for i := 0; i < n; i++ {
-		graph.vertices[i].wg.Wait()
-	}
+	//for i := 0; i < n; i++ {
+	//	graph.vertices[i].wg.Wait()
+	//}
 	<-done
 }
 
 func Forwarder(vertex *Vertex) {
-	defer vertex.wg.Done()
+
 	in := vertex.in
+
 	//Recieve
 	p := <-in
-	fmt.Println("Vertex ", vertex.index, "\n\tPackage recieved: ", p.id)
+	fmt.Println("    Vertex ", vertex.index, "\n\tPackage recieved: ", p.id)
 	p.visited = append(p.visited, vertex.index)
 	vertex.packages = append(vertex.packages, p.id)
 
 	//Choose
 	rand.Seed(time.Now().UnixNano())
-	out := *vertex.outs[rand.Intn(len(vertex.outs))]
+	forwardTo := rand.Intn(len(vertex.outs))
+	out := *vertex.outs[forwardTo]
 	//out := *vertex.outs[0]
 	//Sleep
-	time.Sleep(time.Duration(rand.Intn(10000)))
+	time.Sleep(time.Millisecond * 500)
 
 	//Send
+	vertex.wgs[forwardTo].Add(1)
 	out <- p
+	defer vertex.wgs[forwardTo].Done()
 }
