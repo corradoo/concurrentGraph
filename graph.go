@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var k = 200
+
 type Graph struct {
 	vertices []*Vertex
 }
@@ -58,27 +60,29 @@ func (g *Graph) Nodes() []int {
 func Producer(source chan<- Package, g *Graph, k int) {
 	g.vertices[0].wg.Add(1)
 	wg := &g.vertices[0].wg
-	defer wg.Done()
 	vis := make([]int, 0)
 	for i := 1; i < k; i++ {
 		m := Package{i, vis}
 		fmt.Println("Puting package ", i, " into source...")
 		source <- m
-		time.Sleep(time.Millisecond * 1500)
+		time.Sleep(time.Millisecond * 20)
 	}
+	defer wg.Done()
 }
 
 func Consumer(link <-chan Package, done chan<- bool) {
-	p := <-link
-	fmt.Println("Package nr ", p.id, " recieved: \n", p)
+	for k != 0 {
+		p := <-link
+		fmt.Println("Package nr ", p.id, " recieved: \n", p)
+		k--
+	}
 	done <- true
 }
 
 func main() {
 	graph := New()
-	const n = 10
-	const d = 4
-	k := 5
+	const n = 100
+	const d = 200
 	nodes := make([]int, n)
 
 	//Make nodes
@@ -128,22 +132,25 @@ func Forwarder(vertex *Vertex) {
 
 	in := vertex.in
 
-	//Recieve
-	p := <-in
-	fmt.Println("    Vertex ", vertex.index, "\n\tPackage recieved: ", p.id)
-	p.visited = append(p.visited, vertex.index)
-	vertex.packages = append(vertex.packages, p.id)
+	for k != 0 {
+		//Recieve
+		p := <-in
+		fmt.Println("  Vertex ", vertex.index, "\n\tPackage recieved: ", p.id)
+		p.visited = append(p.visited, vertex.index)
+		vertex.packages = append(vertex.packages, p.id)
 
-	//Choose
-	rand.Seed(time.Now().UnixNano())
-	forwardTo := rand.Intn(len(vertex.outs))
-	out := *vertex.outs[forwardTo]
-	//out := *vertex.outs[0]
-	//Sleep
-	time.Sleep(time.Millisecond * 500)
+		//Choose
+		rand.Seed(time.Now().UnixNano())
+		forwardTo := rand.Intn(len(vertex.outs))
+		out := *vertex.outs[forwardTo]
+		//out := *vertex.outs[0]
+		//Sleep
+		ms := rand.Intn(50)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
 
-	//Send
-	vertex.wgs[forwardTo].Add(1)
-	out <- p
-	defer vertex.wgs[forwardTo].Done()
+		//Send
+		vertex.wgs[forwardTo].Add(1)
+		out <- p
+		vertex.wgs[forwardTo].Done()
+	}
 }
