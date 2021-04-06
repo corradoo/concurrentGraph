@@ -59,19 +59,22 @@ func (g *Graph) Nodes() []int {
 
 func Producer(source chan<- Package, g *Graph, k int) {
 	g.vertices[0].wg.Add(1)
+	rand.Seed(time.Now().UnixNano())
 	wg := &g.vertices[0].wg
 	vis := make([]int, 0)
-	for i := 1; i < k; i++ {
+	for i := 1; i <= k; i++ {
 		m := Package{i, vis}
 		fmt.Println("Puting package ", i, " into source...")
 		source <- m
-		time.Sleep(time.Millisecond * 20)
+		time.Sleep(time.Millisecond * time.Duration(rand.Intn(50)))
 	}
 	defer wg.Done()
 }
 
 func Consumer(link <-chan Package, done chan<- bool) {
+	rand.Seed(time.Now().UnixNano())
 	for k != 0 {
+		time.Sleep(time.Millisecond * time.Duration(rand.Intn(500)))
 		p := <-link
 		fmt.Println("Package nr ", p.id, " recieved: \n", p)
 		k--
@@ -80,9 +83,17 @@ func Consumer(link <-chan Package, done chan<- bool) {
 }
 
 func main() {
+	var n, d int
+	fmt.Println("Type number of vertices: ")
+	fmt.Scanf("%d", &n)
+	fmt.Println("Type number extra edges: ")
+	fmt.Scanf("%d", &d)
+	fmt.Println("Type number packages: ")
+	fmt.Scanf("%d", &k)
+
 	graph := New()
-	const n = 100
-	const d = 200
+	//const n = 100
+	//const d = 200
 	nodes := make([]int, n)
 
 	//Make nodes
