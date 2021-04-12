@@ -3,11 +3,12 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 )
 
-var k = 200
+var k = 10
 
 type Graph struct {
 	vertices []*Vertex
@@ -16,10 +17,10 @@ type Graph struct {
 type Vertex struct {
 	index    int
 	in       chan Package
-	wg       sync.WaitGroup
 	packages []int
 	outs     []*chan Package
-	wgs      []*sync.WaitGroup
+	print    *chan string
+	edges    []int
 }
 
 type Package struct {
@@ -33,12 +34,12 @@ func New() *Graph {
 	}
 }
 
-func (g *Graph) AddNode() (id int) {
+func (g *Graph) AddNode(p *chan string) (id int) {
 	id = len(g.vertices)
 	g.vertices = append(g.vertices, &Vertex{
 		index: id,
 		in:    make(chan Package),
-		wg:    sync.WaitGroup{},
+		print: p,
 	})
 	return
 }
@@ -46,7 +47,7 @@ func (g *Graph) AddNode() (id int) {
 func (g *Graph) AddEdge(v1, v2 int) {
 	//Adding channel to out slice
 	g.vertices[v1].outs = append(g.vertices[v1].outs, &g.vertices[v2].in)
-	g.vertices[v1].wgs = append(g.vertices[v1].wgs, &g.vertices[v2].wg)
+	g.vertices[v1].edges = append(g.vertices[v1].edges, g.vertices[v2].index)
 }
 
 func (g *Graph) Nodes() []int {
@@ -57,29 +58,65 @@ func (g *Graph) Nodes() []int {
 	return vertices
 }
 
-func Producer(source chan<- Package, g *Graph, k int) {
-	g.vertices[0].wg.Add(1)
+func Producer(source chan<- Package, k int, printer *chan string, pWg *sync.WaitGroup) {
 	rand.Seed(time.Now().UnixNano())
-	wg := &g.vertices[0].wg
 	vis := make([]int, 0)
 	for i := 1; i <= k; i++ {
 		m := Package{i, vis}
-		fmt.Println("Puting package ", i, " into source...")
+		msg := fmt.Sprint("Putting package ", i, " into source...")
+		pWg.Add(1)
+		*printer <- msg
+		//fmt.Println("Putting package ", i, " into source...")
 		source <- m
 		time.Sleep(time.Millisecond * time.Duration(rand.Intn(50)))
 	}
-	defer wg.Done()
 }
 
-func Consumer(link <-chan Package, done chan<- bool) {
+func Consumer(link <-chan Package, wg *sync.WaitGroup, packages *[]*Package) {
 	rand.Seed(time.Now().UnixNano())
 	for k != 0 {
 		time.Sleep(time.Millisecond * time.Duration(rand.Intn(500)))
 		p := <-link
-		fmt.Println("Package nr ", p.id, " recieved: \n", p)
+		*packages = append(*packages, &p)
+		//fmt.Println("Package nr ", p.id, " received: \n", p)
 		k--
 	}
-	done <- true
+	wg.Done()
+}
+
+func Forwarder(vertex *Vertex, pWg *sync.WaitGroup) {
+
+	in := vertex.in
+
+	for k != 0 {
+		//Receive
+		p := <-in
+		//fmt.Println("  Vertex ", vertex.index, "\n\tPackage received: ", p.id)
+		msg := "  Vertex " + strconv.Itoa(vertex.index) + "\n\tPackage received: " + strconv.Itoa(p.id)
+		pWg.Add(1)
+		*vertex.print <- msg
+		p.visited = append(p.visited, vertex.index)
+		vertex.packages = append(vertex.packages, p.id)
+
+		//Choose
+		rand.Seed(time.Now().UnixNano())
+		forwardTo := rand.Intn(len(vertex.outs))
+		out := *vertex.outs[forwardTo]
+
+		//Sleep
+		ms := rand.Intn(50)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+
+		//Send
+		out <- p
+	}
+}
+
+func Printer(print <-chan string, pWg *sync.WaitGroup) {
+	for {
+		fmt.Println(<-print)
+		pWg.Done()
+	}
 }
 
 func main() {
@@ -92,20 +129,21 @@ func main() {
 	fmt.Scanf("%d", &k)
 
 	graph := New()
-	//const n = 100
-	//const d = 200
+
 	nodes := make([]int, n)
+	printChan := make(chan string, 100)
+	packages := make([]*Package, 0)
 
 	//Make nodes
 	for i := 0; i < n; i++ {
-		nodes[i] = graph.AddNode()
+		nodes[i] = graph.AddNode(&printChan)
 	}
-	fmt.Println("Nodes: ", graph.Nodes())
 
 	//Put 'normal' edges
 	for i := 0; i < n-1; i++ {
 		graph.AddEdge(nodes[i], nodes[i+1])
 	}
+
 	//Put extra edges
 	rand.Seed(time.Now().UnixNano())
 	for i := 0; i < d; i++ {
@@ -116,52 +154,46 @@ func main() {
 
 	source := make(chan Package)
 	end := make(chan Package)
-	endWG := sync.WaitGroup{}
-	done := make(chan bool)
+	wg := sync.WaitGroup{}
+	pWg := sync.WaitGroup{}
+
+	go Printer(printChan, &pWg)
+	for i, v := range graph.vertices {
+		msg := fmt.Sprint("\t\tVertex ", i, v.edges)
+		pWg.Add(1)
+		printChan <- msg
+	}
 
 	graph.vertices[0].in = source
-	//Exit from ending vertex
-	graph.vertices[len(graph.vertices)-1].outs = append(graph.vertices[len(graph.vertices)-1].outs, &end)
-	graph.vertices[len(graph.vertices)-1].wgs = append(graph.vertices[len(graph.vertices)-1].wgs, &endWG)
 
-	go Producer(source, graph, k)
+	//Exit from ending vertex to Consumer
+	graph.vertices[len(graph.vertices)-1].outs = append(graph.vertices[len(graph.vertices)-1].outs, &end)
+	go Producer(source, k, &printChan, &pWg)
 
 	for i := 0; i < n; i++ {
-		fmt.Println("Starting vertex nr: ", i)
-		graph.vertices[i].wg.Add(1)
-		go Forwarder(graph.vertices[i])
+		go Forwarder(graph.vertices[i], &pWg)
 
 	}
-	go Consumer(end, done)
-	//for i := 0; i < n; i++ {
-	//	graph.vertices[i].wg.Wait()
-	//}
-	<-done
-}
+	wg.Add(1)
+	go Consumer(end, &wg, &packages)
+	//Wait till all packages reach Consumer
+	wg.Wait()
 
-func Forwarder(vertex *Vertex) {
-
-	in := vertex.in
-
-	for k != 0 {
-		//Recieve
-		p := <-in
-		fmt.Println("  Vertex ", vertex.index, "\n\tPackage recieved: ", p.id)
-		p.visited = append(p.visited, vertex.index)
-		vertex.packages = append(vertex.packages, p.id)
-
-		//Choose
-		rand.Seed(time.Now().UnixNano())
-		forwardTo := rand.Intn(len(vertex.outs))
-		out := *vertex.outs[forwardTo]
-		//out := *vertex.outs[0]
-		//Sleep
-		ms := rand.Intn(50)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-
-		//Send
-		vertex.wgs[forwardTo].Add(1)
-		out <- p
-		vertex.wgs[forwardTo].Done()
+	//Final report
+	pWg.Add(2)
+	printChan <- "Final:"
+	printChan <- "\tVertices:"
+	pWg.Add(n)
+	for i, v := range graph.vertices {
+		msg := fmt.Sprint("\t\tVertex ", i, v.packages)
+		printChan <- msg
 	}
+	pWg.Add(1)
+	printChan <- "\tPackages:"
+	for _, v := range packages {
+		msg := fmt.Sprint("\t\tPackage ", *v)
+		pWg.Add(1)
+		printChan <- msg
+	}
+	pWg.Wait()
 }
