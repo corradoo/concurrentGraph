@@ -58,42 +58,42 @@ func (g *Graph) Nodes() []int {
 	return vertices
 }
 
-func Producer(source chan<- Package, k int, printer *chan string, pWg *sync.WaitGroup) {
+func Producer(source chan<- Package, k int, printer *chan string) {
 	rand.Seed(time.Now().UnixNano())
 	vis := make([]int, 0)
 	for i := 1; i <= k; i++ {
 		m := Package{i, vis}
 		msg := fmt.Sprint("Putting package ", i, " into source...")
-		pWg.Add(1)
 		*printer <- msg
-		//fmt.Println("Putting package ", i, " into source...")
 		source <- m
 		time.Sleep(time.Millisecond * time.Duration(rand.Intn(50)))
 	}
 }
 
-func Consumer(link <-chan Package, wg *sync.WaitGroup, packages *[]*Package) {
+func Consumer(link <-chan Package, wg *sync.WaitGroup, packages *[]*Package, printer *chan string) {
 	rand.Seed(time.Now().UnixNano())
 	for k != 0 {
 		time.Sleep(time.Millisecond * time.Duration(rand.Intn(500)))
 		p := <-link
 		*packages = append(*packages, &p)
+		msg := fmt.Sprint("Package nr ", p.id, " received:\n\t", p)
+		*printer <- msg
 		//fmt.Println("Package nr ", p.id, " received: \n", p)
 		k--
 	}
 	wg.Done()
 }
 
-func Forwarder(vertex *Vertex, pWg *sync.WaitGroup) {
+func Forwarder(vertex *Vertex) {
 
 	in := vertex.in
 
-	for k != 0 {
+	for {
 		//Receive
 		p := <-in
 		//fmt.Println("  Vertex ", vertex.index, "\n\tPackage received: ", p.id)
 		msg := "  Vertex " + strconv.Itoa(vertex.index) + "\n\tPackage received: " + strconv.Itoa(p.id)
-		pWg.Add(1)
+
 		*vertex.print <- msg
 		p.visited = append(p.visited, vertex.index)
 		vertex.packages = append(vertex.packages, p.id)
@@ -113,10 +113,11 @@ func Forwarder(vertex *Vertex, pWg *sync.WaitGroup) {
 }
 
 func Printer(print <-chan string, pWg *sync.WaitGroup) {
-	for {
-		fmt.Println(<-print)
-		pWg.Done()
+	for msg := range print {
+		fmt.Println(msg)
 	}
+	fmt.Print("LOG END ---------------------------------------------------------------")
+	pWg.Done()
 }
 
 func main() {
@@ -160,7 +161,6 @@ func main() {
 	go Printer(printChan, &pWg)
 	for i, v := range graph.vertices {
 		msg := fmt.Sprint("\t\tVertex ", i, v.edges)
-		pWg.Add(1)
 		printChan <- msg
 	}
 
@@ -168,32 +168,31 @@ func main() {
 
 	//Exit from ending vertex to Consumer
 	graph.vertices[len(graph.vertices)-1].outs = append(graph.vertices[len(graph.vertices)-1].outs, &end)
-	go Producer(source, k, &printChan, &pWg)
+	go Producer(source, k, &printChan)
 
 	for i := 0; i < n; i++ {
-		go Forwarder(graph.vertices[i], &pWg)
-
+		go Forwarder(graph.vertices[i])
 	}
+
 	wg.Add(1)
-	go Consumer(end, &wg, &packages)
+	go Consumer(end, &wg, &packages, &printChan)
+
 	//Wait till all packages reach Consumer
 	wg.Wait()
 
 	//Final report
-	pWg.Add(2)
+	pWg.Add(1)
 	printChan <- "Final:"
 	printChan <- "\tVertices:"
-	pWg.Add(n)
 	for i, v := range graph.vertices {
 		msg := fmt.Sprint("\t\tVertex ", i, v.packages)
 		printChan <- msg
 	}
-	pWg.Add(1)
 	printChan <- "\tPackages:"
 	for _, v := range packages {
 		msg := fmt.Sprint("\t\tPackage ", *v)
-		pWg.Add(1)
 		printChan <- msg
 	}
+	close(printChan)
 	pWg.Wait()
 }
