@@ -10,6 +10,7 @@ import (
 )
 
 var k = 10
+var h = 30
 
 type Edge struct {
 	v1 int
@@ -21,17 +22,22 @@ type Graph struct {
 }
 
 type Vertex struct {
-	index    int
-	in       chan Package
-	packages []int
-	outs     []*chan Package
-	print    *chan string
-	edges    []int
+	index      int
+	in         chan Package
+	packages   []int
+	vertices   []*Vertex
+	print      *chan string
+	hasPacket  bool
+	gateChan   chan bool
+	hunterChan chan bool
+	isTrapped  bool
+	thrash     *chan Package
 }
 
 type Package struct {
 	id      int
 	visited []int
+	ttl     int
 }
 
 func New() *Graph {
@@ -40,20 +46,24 @@ func New() *Graph {
 	}
 }
 
-func (g *Graph) AddNode(p *chan string) (id int) {
+func (g *Graph) AddNode(p *chan string, t *chan Package) (id int) {
 	id = len(g.vertices)
 	g.vertices = append(g.vertices, &Vertex{
-		index: id,
-		in:    make(chan Package),
-		print: p,
+		index:      id,
+		in:         make(chan Package),
+		print:      p,
+		gateChan:   make(chan bool),
+		thrash:     t,
+		hunterChan: make(chan bool),
 	})
 	return
 }
 
 func (g *Graph) AddEdge(v1, v2 int) {
 	//Adding channel to out slice
-	g.vertices[v1].outs = append(g.vertices[v1].outs, &g.vertices[v2].in)
-	g.vertices[v1].edges = append(g.vertices[v1].edges, g.vertices[v2].index)
+	g.vertices[v1].vertices = append(g.vertices[v1].vertices, g.vertices[v2])
+	/*g.vertices[v1].outs = append(g.vertices[v1].outs, &g.vertices[v2].in)
+	g.vertices[v1].edges = append(g.vertices[v1].edges, g.vertices[v2].index)*/
 }
 
 func (g *Graph) Nodes() []int {
@@ -68,7 +78,7 @@ func Producer(source chan<- Package, k int, printer *chan string) {
 	rand.Seed(time.Now().UnixNano())
 	vis := make([]int, 0)
 	for i := 1; i <= k; i++ {
-		m := Package{i, vis}
+		m := Package{i, vis, h}
 		msg := fmt.Sprint("Putting package ", i, " into source...")
 		*printer <- msg
 		source <- m
@@ -76,16 +86,17 @@ func Producer(source chan<- Package, k int, printer *chan string) {
 	}
 }
 
-func Consumer(link <-chan Package, wg *sync.WaitGroup, packages *[]*Package, printer *chan string) {
+func Consumer(vertex *Vertex, wg *sync.WaitGroup, packages *[]*Package, printer *chan string) {
 	rand.Seed(time.Now().UnixNano())
 	for k != 0 {
-		time.Sleep(time.Millisecond * time.Duration(rand.Intn(500)))
-		p := <-link
+		//time.Sleep(time.Millisecond * time.Duration(rand.Intn(500)))
+		p := <-vertex.in
+		p.visited = append(p.visited, vertex.index)
 		*packages = append(*packages, &p)
 		msg := fmt.Sprint("Package nr ", p.id, " received:\n\t", p)
 		*printer <- msg
-		//fmt.Println("Package nr ", p.id, " received: \n", p)
 		k--
+		vertex.hasPacket = false
 	}
 	wg.Done()
 }
@@ -93,28 +104,84 @@ func Consumer(link <-chan Package, wg *sync.WaitGroup, packages *[]*Package, pri
 func Forwarder(vertex *Vertex) {
 
 	in := vertex.in
+	hun := vertex.hunterChan
+	forwardTo := vertex.vertices[0].in
+	for {
+		select {
+		//Receive
+		case p := <-in:
+			msg := "  Vertex " + strconv.Itoa(vertex.index) + "\n\tPackage received: " + strconv.Itoa(p.id)
+			*vertex.print <- msg
+			p.visited = append(p.visited, vertex.index)
+			vertex.packages = append(vertex.packages, p.id)
+
+			//Check whether vertex is trapped
+			if vertex.isTrapped {
+				msg := "  Vertex " + strconv.Itoa(vertex.index) + "\n\tPackage CAUGHT by HUNTER: " + strconv.Itoa(p.id)
+				*vertex.print <- msg
+				*vertex.thrash <- p
+				vertex.isTrapped = false
+			} else if p.ttl == 0 { // Check if package can live
+				msg := "  Vertex " + strconv.Itoa(vertex.index) + "\n\tPackage DIED: " + strconv.Itoa(p.id)
+				*vertex.print <- msg
+				*vertex.thrash <- p
+			} else { //Package can be forwarded
+				//*vertex.print <- fmt.Sprint("Chcę wysłać")
+				p.ttl--
+				//*vertex.print <- fmt.Sprint("TTL: ", p.ttl)
+				//Sleep
+				ms := rand.Intn(50)
+				time.Sleep(time.Duration(ms) * time.Millisecond)
+
+				//Try to send
+				rand.Seed(time.Now().UnixNano())
+
+			Exit:
+				for {
+					for i, out := range vertex.vertices {
+						out.gateChan <- true
+						res := <-out.gateChan
+						*vertex.print <- fmt.Sprint("\t\tVertex ", vertex.index, " Response from keeper(V:", vertex.vertices[i].index, ") ", res)
+						if res { //Blocked, lipa
+							continue
+						} else {
+							forwardTo = out.in
+							*vertex.print <- fmt.Sprint("\t\tVertex ", vertex.index, " Chosen: ", out.index)
+							break Exit
+						}
+					}
+					*vertex.print <- fmt.Sprint("\t\tVertex ", vertex.index, " shuffling...")
+					rand.Shuffle(len(vertex.vertices), func(i, j int) {
+						vertex.vertices[i], vertex.vertices[j] = vertex.vertices[j], vertex.vertices[i]
+					})
+					time.Sleep(time.Duration(ms) * time.Millisecond)
+				}
+				forwardTo <- p
+			}
+			vertex.hasPacket = false
+
+		//Place trap
+		case <-hun:
+			vertex.isTrapped = true
+
+		default:
+			continue
+		}
+
+	}
+}
+
+func Gatekeeper(vertex *Vertex) {
 
 	for {
-		//Receive
-		p := <-in
-		//fmt.Println("  Vertex ", vertex.index, "\n\tPackage received: ", p.id)
-		msg := "  Vertex " + strconv.Itoa(vertex.index) + "\n\tPackage received: " + strconv.Itoa(p.id)
-
-		*vertex.print <- msg
-		p.visited = append(p.visited, vertex.index)
-		vertex.packages = append(vertex.packages, p.id)
-
-		//Choose
-		rand.Seed(time.Now().UnixNano())
-		forwardTo := rand.Intn(len(vertex.outs))
-		out := *vertex.outs[forwardTo]
-
-		//Sleep
-		ms := rand.Intn(50)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-
-		//Send
-		out <- p
+		<-vertex.gateChan
+		if vertex.hasPacket {
+			vertex.gateChan <- true
+		} else {
+			vertex.hasPacket = true
+			vertex.gateChan <- false
+		}
+		time.Sleep(time.Millisecond * 5)
 	}
 }
 
@@ -126,9 +193,30 @@ func Printer(print <-chan string, pWg *sync.WaitGroup) {
 	pWg.Done()
 }
 
+func Trasher(t <-chan Package, wg *sync.WaitGroup, packages *[]*Package) {
+	for k != 0 {
+		p := <-t
+		fmt.Println(p, " In TRASH")
+		*packages = append(*packages, &p)
+		k--
+	}
+	wg.Done()
+}
+
+func Hunter(g *Graph) {
+
+	rand.Seed(time.Now().UnixNano())
+
+	for {
+		time.Sleep(time.Millisecond * 500)
+		v := g.vertices[rand.Intn(len(g.vertices))]
+		v.hunterChan <- true
+	}
+}
+
 func main() {
-	var n, d, b int
-	fmt.Println("Type number of vertices: ")
+	var n, d, b = 10, 20, 20
+	/*fmt.Println("Type number of vertices: ")
 	fmt.Scanf("%d", &n)
 	fmt.Println("Type number extra forward edges: ")
 	fmt.Scanf("%d", &d)
@@ -136,6 +224,8 @@ func main() {
 	fmt.Scanf("%d", &b)
 	fmt.Println("Type number packages: ")
 	fmt.Scanf("%d", &k)
+	fmt.Println("Type TTL for all packs: ")
+	fmt.Scanf("%d", &h)*/
 
 	binomial := new(big.Int)
 	binomial.Binomial(int64(n), 2)
@@ -145,11 +235,12 @@ func main() {
 
 	nodes := make([]int, n)
 	printChan := make(chan string, 100)
+	trashChan := make(chan Package)
 	packages := make([]*Package, 0)
 
 	//Make nodes
 	for i := 0; i < n; i++ {
-		nodes[i] = graph.AddNode(&printChan)
+		nodes[i] = graph.AddNode(&printChan, &trashChan)
 	}
 
 	//Put 'normal' edges
@@ -205,30 +296,45 @@ func main() {
 	}
 
 	source := make(chan Package)
-	end := make(chan Package)
+	end := &Vertex{
+		index:     -1,
+		in:        make(chan Package),
+		print:     &printChan,
+		hasPacket: false,
+		gateChan:  make(chan bool),
+	}
 	wg := sync.WaitGroup{}
 	pWg := sync.WaitGroup{}
+	graph.vertices[len(graph.vertices)-1].vertices = append(graph.vertices[len(graph.vertices)-1].vertices, end)
 
 	go Printer(printChan, &pWg)
+
 	for i, v := range graph.vertices {
-		msg := fmt.Sprint("\t\tVertex ", i, v.edges)
+		msg := fmt.Sprint("\t\tVertex ", i, " [ ")
+		for _, outs := range v.vertices {
+			msg = msg + fmt.Sprint(outs.index, " ")
+		}
+		msg = msg + "]"
 		printChan <- msg
 	}
-
+	go Trasher(trashChan, &wg, &packages)
 	graph.vertices[0].in = source
 
 	//Exit from ending vertex to Consumer
-	graph.vertices[len(graph.vertices)-1].outs = append(graph.vertices[len(graph.vertices)-1].outs, &end)
+
 	go Producer(source, k, &printChan)
 
 	for i := 0; i < n; i++ {
+		go Gatekeeper(graph.vertices[i])
 		go Forwarder(graph.vertices[i])
 	}
 
 	wg.Add(1)
-	go Consumer(end, &wg, &packages, &printChan)
 
-	//Wait till all packages reach Consumer
+	go Gatekeeper(end)
+	go Consumer(end, &wg, &packages, &printChan)
+	go Hunter(graph)
+	//Wait till all packages reach Consumer / get deleted
 	wg.Wait()
 
 	//Final report
