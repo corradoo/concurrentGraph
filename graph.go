@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/big"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -9,6 +10,11 @@ import (
 )
 
 var k = 10
+
+type Edge struct {
+	v1 int
+	v2 int
+}
 
 type Graph struct {
 	vertices []*Vertex
@@ -121,14 +127,20 @@ func Printer(print <-chan string, pWg *sync.WaitGroup) {
 }
 
 func main() {
-	var n, d int
+	var n, d, b int
 	fmt.Println("Type number of vertices: ")
 	fmt.Scanf("%d", &n)
-	fmt.Println("Type number extra edges: ")
+	fmt.Println("Type number extra forward edges: ")
 	fmt.Scanf("%d", &d)
+	fmt.Println("Type number extra backward edges: ")
+	fmt.Scanf("%d", &b)
 	fmt.Println("Type number packages: ")
 	fmt.Scanf("%d", &k)
 
+	binomial := new(big.Int)
+	binomial.Binomial(int64(n), 2)
+	edges := int64(d + b)
+	fmt.Println("Edges percentage: ", float64(edges)/(float64(binomial.Int64())*2.0))
 	graph := New()
 
 	nodes := make([]int, n)
@@ -147,9 +159,48 @@ func main() {
 
 	//Put extra edges
 	rand.Seed(time.Now().UnixNano())
+
+	//Make all possible edges, and then shuffle them
+	forwardEdges := make([]Edge, 0)
+	backwardEdges := make([]Edge, 0)
+	for i := 0; i < n-1; i++ {
+		for j := i + 1; j < n; j++ {
+			if i != j {
+				if i+1 < j {
+					forwardEdges = append(forwardEdges,
+						Edge{
+							v1: i,
+							v2: j,
+						})
+				}
+				backwardEdges = append(backwardEdges,
+					Edge{
+						v1: j,
+						v2: i,
+					})
+			}
+		}
+	}
+
+	rand.Shuffle(len(forwardEdges), func(i, j int) {
+		forwardEdges[i], forwardEdges[j] = forwardEdges[j], forwardEdges[i]
+	})
+	rand.Shuffle(len(backwardEdges), func(i, j int) {
+		backwardEdges[i], backwardEdges[j] = backwardEdges[j], backwardEdges[i]
+	})
+
+	fmt.Println(backwardEdges)
+	fmt.Println(forwardEdges)
+
 	for i := 0; i < d; i++ {
-		v1 := rand.Intn(n - 2)
-		v2 := rand.Intn(n-1-v1) + v1 + 1
+		v1 := forwardEdges[i].v1
+		v2 := forwardEdges[i].v2
+		graph.AddEdge(v1, v2)
+	}
+
+	for i := 0; i < b; i++ {
+		v1 := backwardEdges[i].v1
+		v2 := backwardEdges[i].v2
 		graph.AddEdge(v1, v2)
 	}
 
