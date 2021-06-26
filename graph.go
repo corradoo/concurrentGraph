@@ -32,6 +32,7 @@ type Vertex struct {
 	hunterChan chan bool
 	isTrapped  bool
 	thrash     *chan Package
+	rounds     int
 }
 
 type Package struct {
@@ -55,6 +56,7 @@ func (g *Graph) AddNode(p *chan string, t *chan Package) (id int) {
 		gateChan:   make(chan bool),
 		thrash:     t,
 		hunterChan: make(chan bool),
+		rounds:     0,
 	})
 	return
 }
@@ -74,15 +76,25 @@ func (g *Graph) Nodes() []int {
 	return vertices
 }
 
-func Producer(source chan<- Package, k int, printer *chan string) {
+func Producer(vertex *Vertex, k int, printer *chan string) {
 	rand.Seed(time.Now().UnixNano())
 	vis := make([]int, 0)
 	for i := 1; i <= k; i++ {
-		m := Package{i, vis, h}
-		msg := fmt.Sprint("Putting package ", i, " into source...")
-		*printer <- msg
-		source <- m
-		time.Sleep(time.Millisecond * time.Duration(rand.Intn(50)))
+		p := Package{i, vis, h}
+		for {
+			vertex.gateChan <- true
+			res := <-vertex.gateChan
+			*printer <- fmt.Sprint("source response: ", res)
+			if res {
+				time.Sleep(time.Millisecond * time.Duration(rand.Intn(50)))
+			} else {
+				msg := fmt.Sprint("Putting package ", i, " into source...")
+				*printer <- msg
+				vertex.in <- p
+				break
+			}
+			time.Sleep(time.Millisecond * time.Duration(rand.Intn(50)))
+		}
 	}
 }
 
@@ -136,8 +148,13 @@ func Forwarder(vertex *Vertex) {
 				//Try to send
 				rand.Seed(time.Now().UnixNano())
 
-			Exit:
+			Round:
 				for {
+					*vertex.print <- fmt.Sprint("\t\tVertex ", vertex.index, " shuffling...")
+					rand.Shuffle(len(vertex.vertices), func(i, j int) {
+						vertex.vertices[i], vertex.vertices[j] = vertex.vertices[j], vertex.vertices[i]
+					})
+					vertex.rounds++
 					for i, out := range vertex.vertices {
 						out.gateChan <- true
 						res := <-out.gateChan
@@ -147,13 +164,9 @@ func Forwarder(vertex *Vertex) {
 						} else {
 							forwardTo = out.in
 							*vertex.print <- fmt.Sprint("\t\tVertex ", vertex.index, " Chosen: ", out.index)
-							break Exit
+							break Round
 						}
 					}
-					*vertex.print <- fmt.Sprint("\t\tVertex ", vertex.index, " shuffling...")
-					rand.Shuffle(len(vertex.vertices), func(i, j int) {
-						vertex.vertices[i], vertex.vertices[j] = vertex.vertices[j], vertex.vertices[i]
-					})
 					time.Sleep(time.Duration(ms) * time.Millisecond)
 				}
 				forwardTo <- p
@@ -215,7 +228,7 @@ func Hunter(g *Graph) {
 }
 
 func main() {
-	var n, d, b = 10, 20, 20
+	var n, d, b = 10, 35, 35
 	/*fmt.Println("Type number of vertices: ")
 	fmt.Scanf("%d", &n)
 	fmt.Println("Type number extra forward edges: ")
@@ -229,7 +242,7 @@ func main() {
 
 	binomial := new(big.Int)
 	binomial.Binomial(int64(n), 2)
-	edges := int64(d + b)
+	edges := int64(d + b + n - 1)
 	fmt.Println("Edges percentage: ", float64(edges)/(float64(binomial.Int64())*2.0))
 	graph := New()
 
@@ -295,7 +308,7 @@ func main() {
 		graph.AddEdge(v1, v2)
 	}
 
-	source := make(chan Package)
+	//source := make(chan Package)
 	end := &Vertex{
 		index:     -1,
 		in:        make(chan Package),
@@ -318,11 +331,11 @@ func main() {
 		printChan <- msg
 	}
 	go Trasher(trashChan, &wg, &packages)
-	graph.vertices[0].in = source
+	//graph.vertices[0].in = source
 
 	//Exit from ending vertex to Consumer
 
-	go Producer(source, k, &printChan)
+	go Producer(graph.vertices[0], k, &printChan)
 
 	for i := 0; i < n; i++ {
 		go Gatekeeper(graph.vertices[i])
@@ -342,7 +355,7 @@ func main() {
 	printChan <- "Final:"
 	printChan <- "\tVertices:"
 	for i, v := range graph.vertices {
-		msg := fmt.Sprint("\t\tVertex ", i, v.packages)
+		msg := fmt.Sprint("\t\tVertex ", i, v.packages, " packs: ", len(v.packages), " rounds: ", v.rounds)
 		printChan <- msg
 	}
 	printChan <- "\tPackages:"
